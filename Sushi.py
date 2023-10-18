@@ -324,8 +324,8 @@ def Starlet_Forward2D(input_image,J=4):
 #SUSHI
 #Credit: Julia Lascar 2023
 #####################################
-def SUSHI(X_im,self_T,self_S,Amplitude_S=None,Amp_fixed=False,Amplitude_T=None,
-                           niter=10000,stop=1e-6,J=2,kmad=1,mask_amp=10,background=None,
+def SUSHI(X_im,*models,component_names=["Thermal","Synchrotron"],
+          niter=10000,stop=1e-6,J=2,kmad=1,mask_amp=10,background=None,
                            Cost_function="Poisson",Chi_2_sigma=None,Custom_Cost=None,
                            Custom_alpha=None):
     """
@@ -333,11 +333,8 @@ def SUSHI(X_im,self_T,self_S,Amplitude_S=None,Amp_fixed=False,Amplitude_T=None,
 
     INPUT:
     X_im: Input hyperspectral image, (l) energy channels, (m,n) pixels
-    self_T: IAE model, Thermal
-    self_S: IAE model, Synchrotron
-    Amp_fixed: if true, Amplitude is fixed to a given value.
-    Amplitude_T, Amplitude_S: If Amp_fixed is True, these are the fixed amplitudes
-    for the Thermal and Synchrotron models.
+    models: IAE learnt functions, one for each of the components.
+    component_names: names given to the components.
     niter: number of maximum iterations
     stop: stopping criterion
     J: number of wavelet scales for spatial regularisation
@@ -360,99 +357,139 @@ def SUSHI(X_im,self_T,self_S,Amplitude_S=None,Amp_fixed=False,Amplitude_T=None,
         "XRec": Best fit hyperspectral cube
         "Likelihood": Negative Poisson Log Likelihood over iterations.
     """
-    #TO DO:
-    #- Make the Parameters only one object instead of being stored in a dict,
-    # or list depending on code area. This is a remnant of Jax sometimes
-    # raising errors when keeping it all in a dict.
-    #
-    #- Make this code easily applicable to other unmixing configurations, not
-    # hard coded for "Thermal" and "Synchrotron".
-
+    from copy import deepcopy
     import numpy as onp
     import jax.numpy as np
-    from jax import grad, jit, lax, hessian,random,vmap
-    from jax.example_libraries.optimizers import adam, momentum, sgd, nesterov, adagrad, rmsprop
+    from jax import grad, jit
     from tqdm.notebook import tqdm,trange
-    from astropy.io import fits
 
-
-
-    #MODELS AND DIMS
     l,m,n=X_im.shape
     print(f"Shape of the data: {l} channels, {m}x{n} pixels.")
     mask_amp=1 #Ignore wavelet coefficients on pixels with 0 counts.
-    X=np.reshape(np.transpose(X_im,(1,2,0)),(m*n,l)) #vectorized image
-    if Chi_2_sigma is not None:
-        Chi_2_sigma=np.reshape(np.transpose(Chi_2_sigma,(1,2,0)),(m*n,l))
-    if background is not None:
-        bg_vec=np.reshape(np.transpose(background,(1,2,0)),(m*n,l))
-    print("Using SUSHI with background file.")
-    print("Using cost function "+Cost_function)
+    X_vec=np.reshape(np.transpose(X_im,(1,2,0)),(m*n,l)) #vectorized image
+    class Component:
+        def __init__(self, name, model):
+            self.name = name
+            self.model = model
+            self.N_A=self.model.AnchorPoints.shape[0]
 
-    #Models: the dictionary containing the IAE models.
-    Models={"Thermal":{"LearnFunc":self_T},"Synch":{"LearnFunc":self_S}}
-    list_models=["Thermal","Synch"]
-    for M in Models.keys():
-        #number of anchor points:
-        N_A=Models[M]["LearnFunc"].AnchorPoints.shape[0]
-        Models[M]["N_A"]=N_A
+    Component_list=[]
+    print("Models:")
+    for i,mod in enumerate(models):
+        print(component_names[i])
+        Component_list.append(Component(component_names[i], mod))
+    N_C=len(Component_list)
 
-    ################# FUNCTIONS #################
-    #def simplex(Lambda,NA):
-    #    "Applies simplex constraint"
-    #    Norm=onp.tile((Lambda.sum(axis=1)),(NA, 1)).T
-    #    Mask=onp.where(Norm!=0)
-    #    Lambda[Mask]=Lambda[Mask]/Norm[Mask]
-    #    return Lambda,Norm[Mask]
-    def X_Recover(Params):
+    def X_Recover(Theta_all,Amp_all,Comps,X_im=X_im):
         """
         Spectral Generation function.
-        INPUT:
-        Params: Dictionary with, for each model, the lambda and amp parameters.
-        OUTPUT:
-        XRec: Dictionary containg the component spectra and their sum.
         """
+        l,m,n=X_im.shape
         XRec={"Total":np.zeros((m*n,l))}
-        for M in list_models:
-            LF=Models[M]["LearnFunc"]
-            Lambda=Params[M]["Lambda"]
-            Amplitude=Params[M]["Amplitude"]
-            B = Lambda @ Models[M]["LearnFunc"].PhiE
-            XRec[M]=LF.decoder(B)
-            XRec[M]=XRec[M]*Amplitude[:,np.newaxis]
-            if background is not None:
-              XRec["Total"]+=XRec[M]+bg_vec
-            else:
-              XRec["Total"]+=XRec[M]
+        if background is not None:
+            XRec["Total"]+=XRec["Total"]+bg_vec
+
+        for index,mod_name in enumerate(component_names):
+            #print(mod_name)
+            #print(Theta_all[index].shape)
+            B = Theta_all[index] @ Comps[index].model.PhiE
+            XRec[mod_name]=Comps[index].model.decoder(B)
+            XRec[mod_name]=XRec[mod_name]*Amp_all[index][:,np.newaxis]
+            XRec["Total"]+=XRec[mod_name]
         return XRec
 
-    def get_cost(LT,LS,AT,AS,X=X):
-        """
-        Cost function.
-        INPUT:
-        LT,LS,AT,AS: Lambda for each models, and amplitude for each models.
-        OUTPUT:
-        XRec: Negative Poisson Log Likelihood
-        """
-        Params={"Thermal":{"Lambda":LT,"Amplitude":AT},"Synch":{"Lambda":LS,"Amplitude":AS}}
-        XRec=X_Recover(Params)
+    def get_cost(Theta_all,Amp_all,Comps):
+        XRec=X_Recover(Theta_all,Amp_all,Comps)
         Mask=(XRec["Total"]>0)
         if Cost_function=="Poisson":
-            Cost=(XRec["Total"]*Mask - X*Mask*np.log(np.abs(XRec["Total"])+1e-16)).sum()
+            Cost=(XRec["Total"]*Mask - X_vec*Mask*np.log(np.abs(XRec["Total"])+1e-16)).sum()
         elif Cost_function=="Chi_2":
             if Chi_2_sigma is not None:
-                Cost=(((X*Mask-XRec["Total"]*Mask)**2)/Chi_2_sigma**2).sum()
+                Cost=(((X_vec*Mask-XRec["Total"]*Mask)**2)/Chi_2_sigma**2).sum()
             else:
-                Cost=(((X*Mask-XRec["Total"]*Mask)**2)).sum()
+                Cost=(((X_vec*Mask-XRec["Total"]*Mask)**2)).sum()
         elif Cost_function=="Custom":
-            Cost=Custom_Cost(X,XRec["Total"])
+            Cost=Custom_Cost(X_vec,XRec["Total"])
         else:
             print("Error. Cost_function can only be Poisson, Chi_2, or Custom.")
             return np.nan
-        #print(Cost)
         return Cost
 
-    def alpha_A(Parameters,m_id,X=X):
+    def get_cost_with_varyingAT(T,A,Theta_all,Amp_all,index,Comps):
+        #CHECK HERE: used to be Amp_all_var !!!
+        #In a separate function to calculate the
+        Amp_all_var=deepcopy(Amp_all)
+        Amp_all_var[index]=A
+
+        Theta_all_var=deepcopy(Theta_all)
+        Theta_all_var[index]=T
+        #print("varying T",T.shape,"index:", index)
+        cost=get_cost(Theta_all_var,Amp_all_var,Comps)
+        return cost
+
+    for fixed_index in range(N_C):
+        #Getting the gradients for each components
+        #print("index",fixed_index)
+        Component_list[fixed_index].T_grad= jit(lambda T,A,T_all,A_all,fixed_index:
+                                                grad(get_cost_with_varyingAT,argnums=0)(
+                                                    T,A,T_all,A_all,fixed_index,Component_list),
+                                               static_argnames="fixed_index")
+        Component_list[fixed_index].A_grad= jit(lambda T,A,T_all,A_all,fixed_index:
+                                                grad(get_cost_with_varyingAT,argnums=1)(
+                                                    T,A,T_all,A_all,fixed_index,Component_list),
+                                               static_argnames="fixed_index")
+
+        #GradT=grad(get_cost_with_varyingAT,argnums=0)
+        #globals()[f"GradT_{fixed_index}"]=deepcopy(GradT)
+        #GradA=grad(get_cost_with_varyingAT,argnums=1)
+        #globals()[f"GradA_{fixed_index}"]=deepcopy(GradA)
+        #Component_list[fixed_index].T_grad= jit(lambda T,A,T_all,A_all: globals()[f"GradT_{fixed_index}"](T,A,T_all,A_all,fixed_index,Component_list))
+        #Component_list[fixed_index].A_grad= jit(lambda T,A,T_all,A_all: globals()[f"GradA_{fixed_index}"](T,A,T_all,A_all,fixed_index,Component_list))
+
+
+
+    def mad(z):
+        """
+        Calculates the median absolute deviation.
+        """
+        return onp.median(onp.abs(z - onp.median(z)))/0.6735
+
+
+    def reg_grad_thrs(Lambda,grad,alpha_T,Amp,NA):
+        """
+        Regularisation for separate Lambdas.
+
+        INPUT:
+        Lambda: Lambda map (for one model) (shape: m*n,NA)
+        grad: gradient of log-likelihood over lambda (for one model)
+        alpha_L: lambda gradient step
+        Amp: Amplitude (for one model)
+        NA: number of anchor points (for one model)
+        OUTPUT:
+        Output_vec: Regularised lambda maps (shape: m*n,NA)
+        """
+        import numpy as onp
+        Lambda_map=onp.asarray(onp.reshape(Lambda,(m,n,NA)))
+        grad_map=onp.asarray(onp.reshape(grad,(m,n,NA)))
+        Output=onp.zeros((m,n,NA))
+        Amp=np.reshape(Amp,(m,n))
+        for i in range(NA):
+            x=Lambda_map[:,:,i]
+            c,w = Starlet_Forward2D(x,J=J)
+            c_g,w_g = Starlet_Forward2D(grad_map[:,:,i],J=J)
+            for r in range(J):
+                w_g_mask=w_g[:,:,r].copy()
+                w_g_mask=w_g_mask[onp.where(Amp>mask_amp)]
+                thrd=kmad*alpha_T*mad(w_g_mask) #sparsity threshold
+                #L1 convex relaxation proximal operator
+                w[:,:,r] = (w[:,:,r] - thrd*onp.sign(w[:,:,r]))*(onp.abs(w[:,:,r]) > thrd)
+
+            Output[:,:,i]=c + onp.sum(w,axis=2) # Sum all planes including coarse scale
+        Output_vec=onp.reshape(Output,(m*n,NA))
+        return Output_vec
+
+
+    def alpha_A_generator(Comp,all_theta,all_amp,i,X=X_vec):
         """
         Function to obtain the gradient step for the Amplitude.
         INPUT:
@@ -462,14 +499,18 @@ def SUSHI(X_im,self_T,self_S,Amplitude_S=None,Amp_fixed=False,Amplitude_T=None,
         alpha: Amplitude gradient step.
         """
         #Lambda: Parameters[m_id], Amplitude: Parameters[m_id+2]
-        A0,L0=Parameters[m_id+2],Parameters[m_id]
-        A1,L1=Parameters[m_id+2+(-1)**m_id],Parameters[np.abs(m_id-1)]
-        M0,M1=list_models[m_id],list_models[np.abs(m_id-1)]
-        LF0,LF1=Models[M0]["LearnFunc"],Models[M1]["LearnFunc"]
-        B0,B1 = L0 @ LF0.PhiE, L1 @ LF1.PhiE
-        Phi0,Phi1=LF0.decoder(B0),LF1.decoder(B1)
+
+        A0=all_amp[i]
+        Phi0=Comp[i].model.decoder(all_theta[i]@Comp[i].model.PhiE)
         if Cost_function == "Poisson":
-            H=(Phi0**2)*X/(Phi0*A0[:,onp.newaxis]+Phi1*A1[:,onp.newaxis])**2
+            dividend=Phi0*A0[:,onp.newaxis]
+            k=0
+            for j in range(N_C):
+                if j!=i:
+                    Phi_other_J= Comp[j].model.decoder(all_theta[j]@Comp[j].model.PhiE)
+                    dividend+=Phi_other_J*all_amp[j][:,onp.newaxis]
+                    k+=1
+            H=(Phi0**2)*X/(dividend)**2
             H=H.sum(axis=1)
             alpha=(1/H)
             alpha=alpha.at[onp.where(onp.isnan(alpha))].set(0)
@@ -485,126 +526,52 @@ def SUSHI(X_im,self_T,self_S,Amplitude_S=None,Amp_fixed=False,Amplitude_T=None,
             alpha=Custom_alpha
         return alpha
 
-    #GRADS
-    @jit
-    def LT_grad(LT,LS,AT,AS,X=X):
-        return grad(get_cost,argnums=0)(LT,LS,AT,AS,X=X)
-    @jit
-    def LS_grad(LT,LS,AT,AS,X=X):
-        return grad(get_cost,argnums=1)(LT,LS,AT,AS,X=X)
-    @jit
-    def AT_grad(LT,LS,AT,AS,X=X):
-        return grad(get_cost,argnums=2)(LT,LS,AT,AS,X=X)
-    @jit
-    def AS_grad(LT,LS,AT,AS,X=X):
-        return grad(get_cost,argnums=3)(LT,LS,AT,AS,X=X)
-    def mad(z):
-        """
-        Calculates the median absolute deviation.
-        """
-        return onp.median(onp.abs(z - onp.median(z)))/0.6735
+    Amp_all=[]
+    Theta_all=[]
+    for c in range(N_C):
+        #First guess
+        Amp_all.append((X_vec.sum(axis=1))/N_C)
+        Theta_all.append(np.ones((m*n,Component_list[c].N_A))/Component_list[c].N_A)
 
-
-    def reg_grad_thrs(Lambda,grad,alpha_L,Amp,NA):
-        import numpy as onp
-        """
-        Regularisation for separate Lambdas.
-
-        INPUT:
-        Lambda: Lambda map (for one model) (shape: m*n,NA)
-        grad: gradient of log-likelihood over lambda (for one model)
-        alpha_L: lambda gradient step
-        Amp: Amplitude (for one model)
-        NA: number of anchor points (for one model)
-        OUTPUT:
-        Output_vec: Regularised lambda maps (shape: m*n,NA)
-        """
-        Lambda_map=onp.asarray(onp.reshape(Lambda,(m,n,NA)))
-        grad_map=onp.asarray(onp.reshape(grad,(m,n,NA)))
-        Output=onp.zeros((m,n,NA))
-        Amp=np.reshape(Amp,(m,n))
-        for i in range(NA):
-            x=Lambda_map[:,:,i]
-            c,w = Starlet_Forward2D(x,J=J)
-            c_g,w_g = Starlet_Forward2D(grad_map[:,:,i],J=J)
-            for r in range(J):
-                w_g_mask=w_g[:,:,r].copy()
-                w_g_mask=w_g_mask[onp.where(Amp>mask_amp)]
-                thrd=kmad*alpha_L*mad(w_g_mask) #sparsity threshold
-                #L1 convex relaxation proximal operator
-                w[:,:,r] = (w[:,:,r] - thrd*onp.sign(w[:,:,r]))*(onp.abs(w[:,:,r]) > thrd)
-
-            Output[:,:,i]=c + onp.sum(w,axis=2) # Sum all planes including coarse scale
-        Output_vec=onp.reshape(Output,(m*n,NA))
-
-
-        return Output_vec
-
-
-    Models["Thermal"]["gradL"],Models["Synch"]["gradL"]=LT_grad,LS_grad
-    Models["Thermal"]["gradA"],Models["Synch"]["gradA"]=AT_grad,AS_grad
-
-
-    ################# INIT #################
-    Lambda_thermal=np.zeros((m*n,Models["Thermal"]["N_A"])) +1/Models["Thermal"]["N_A"]
-    Lambda_synch=np.zeros((m*n,Models["Synch"]["N_A"])) +1/Models["Synch"]["N_A"]
-
-    if Amp_fixed:
-        print("Amp fixed")
-        Amp_thermal=np.reshape(Amplitude_T,m*n)
-        Amp_synch=np.reshape(Amplitude_S,m*n)
-    else:
-        Amp_thermal=X.sum(axis=1)/2
-        Amp_synch=X.sum(axis=1)/2
-
-    #Parameters are stored in a list:
-    Parameters=[Lambda_thermal,Lambda_synch,Amp_thermal,Amp_synch]
-    Parameters_0=[Lambda_thermal,Lambda_synch,Amp_thermal,Amp_synch]
-
-    #Gradient step size:
-    for m_id, M in enumerate(list_models):
-        Models[M]["alpha_L"]=0.1/onp.max(X.sum(axis=1))
-        Models[M]["alpha_A"]=alpha_A(Parameters,m_id)
+    #Gradient step size
+    alpha_T=0.1/onp.max(X_vec.sum(axis=1))
 
     #Values to keep track of
     Acc=[] #Likelihood
     Diff=[] #Difference in likelihood
-    LT,LS,AT,AS=Parameters
 
     ################# LOOP #################
     t=trange(niter, desc='Loss', leave=True)
     for i in t:
-        for m_id, M in enumerate(list_models):
+        for c in range(N_C):
             #Descent on Lambda
-            LT,LS,AT,AS=Parameters
-            Param_old=Parameters[m_id].copy()
-            gradL=Models[M]["gradL"]
-            Lamb_grad=gradL(LT,LS,AT,AS)
-            Lambda_grad_descent=Param_old-Models[M]["alpha_L"]*Lamb_grad
+            #print("Theta before",Theta_all[c].shape)
+            #print("Theta_all",Theta_all[0].shape,Theta_all[1].shape)
+            gradT=Component_list[c].T_grad
+            #print("grad_T",gradT)
+            Theta_grad=gradT(Theta_all[c],Amp_all[c],Theta_all,Amp_all,fixed_index=c)
+            Theta_grad_descent=Theta_all[c]-alpha_T*Theta_grad
 
-            Lambda_reg=reg_grad_thrs(Lambda_grad_descent,Lamb_grad,
-                                     alpha_L=Models[M]["alpha_L"],Amp=Parameters[m_id+2],
-                                     NA=Models[M]["N_A"])
+            Theta_reg=reg_grad_thrs(Theta_grad_descent,Theta_grad,
+                                     alpha_T=alpha_T,Amp=Amp_all[c],
+                                     NA=Component_list[c].N_A)
 
-            Parameters[m_id]=Lambda_reg
+            Theta_all[c]=Theta_reg
+            #print("Theta_all",Theta_all[0].shape,Theta_all[1].shape)
+            #print("Theta after",Theta_reg.shape)
 
-            LT,LS,AT,AS=Parameters
 
-        for m_id, M in enumerate(list_models):
+
+        for c in range(N_C):
             #Descent on Amplitude
-            if not Amp_fixed:
-                LT,LS,AT,AS=Parameters
-                Param_old=Parameters[m_id+2].copy()
-                gradA=Models[M]["gradA"]
-                Amp_grad=gradA(LT,LS,AT,AS)
-                Models[M]["alpha_A"]=alpha_A(Parameters,m_id)
-                new_Amp=Param_old-Models[M]["alpha_A"]*Amp_grad
-                new_Amp=new_Amp*(new_Amp>0)
-                Parameters[m_id+2]=new_Amp
+            gradA=Component_list[c].A_grad
+            Amp_grad=gradA(Theta_all[c],Amp_all[c],Theta_all,Amp_all,fixed_index=c)
+            alpha_A=alpha_A_generator(Component_list,Theta_all,Amp_all,c)
+            new_Amp=Amp_all[c]-alpha_A*Amp_grad
+            new_Amp=new_Amp*(new_Amp>0) #non-negative
+            Amp_all[c]=new_Amp
 
-        LT,LS,AT,AS=Parameters
-
-        likelihood=get_cost(LT,LS,AT,AS)
+        likelihood=get_cost(Theta_all,Amp_all,Component_list)
         Acc.append(likelihood)
         #STOPPING CRITERION
         mean_likelihood=0
@@ -621,11 +588,11 @@ def SUSHI(X_im,self_T,self_S,Amplitude_S=None,Amp_fixed=False,Amplitude_T=None,
         t.set_description(f"Loss= {likelihood:.4e}, Mean diff: {mean_likelihood:.2e}")
         t.refresh()
 
-    LT,LS,AT,AS=Parameters
     Results={}
-    Params={"Thermal":{"Lambda":LT,"Amplitude":AT},"Synch":{"Lambda":LS,"Amplitude":AS}}
-    XRec=X_Recover(Params)
-    Results["Params"]=Params
+    XRec=X_Recover(Theta_all,Amp_all,Component_list)
+    Results["Theta"]=Theta_all
+    Results["Amplitude"]=Amp_all
+    #Results["Components"]=Component_list
     Results["XRec"]=XRec
     Results["Likelihood"]=Acc
 

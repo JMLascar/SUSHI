@@ -1,0 +1,28 @@
+# Conda environment for Gammapy version 1.1
+# Install:    conda env create -f gammapy-1.1-environment.yml
+# Activate:   conda activate gammapy-1.1
+# Deactivate: conda deactivate
+
+name: SUSHI_env
+
+channels:
+  - conda-forge
+
+variables:
+  PYTHONNOUSERSITE: "1"
+
+dependencies:
+  - python=3.10
+  - ipython=8.16
+  - ipywidgets=8.1
+  - jupyter
+  - numpy=1.24
+  - scipy=1.11
+  - matplotlib=3.8
+  - astropy=5.3
+  - numba=0.57
+  - jax=0.4
+  - jaxlib=0.4
+  - pip
+  - requests
+  - tqdm

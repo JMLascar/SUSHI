@@ -327,7 +327,7 @@ def Starlet_Forward2D(input_image,J=4):
 def SUSHI(X_im,*models,component_names=["Thermal","Synchrotron"],
           niter=10000,stop=1e-6,J=2,kmad=1,mask_amp=10,background=None,
                            Cost_function="Poisson",Chi_2_sigma=None,Custom_Cost=None,
-                           Custom_alpha=None):
+                           Custom_alpha=None,alpha_T=None):
     """
     Semi-blind Unmixing with Sparsity for Hyperspectral Images
 
@@ -350,6 +350,7 @@ def SUSHI(X_im,*models,component_names=["Thermal","Synchrotron"],
     Custom_Cost: Custom cost function. Ignored if Poisson or Chi_2 were selected.
     Custom_alpha: If Custom cost function was selected, please define the amplitude
                   gradient step size. 1/Hessian is recommended.
+    alpha_T: To manually change the step size on theta. If None, automatic. 
     ______________________________________________
     OUTPUT:
     Results: A dictionary with the following keys:
@@ -538,7 +539,8 @@ def SUSHI(X_im,*models,component_names=["Thermal","Synchrotron"],
         Theta_all.append(np.ones((m*n,Component_list[c].N_A))/Component_list[c].N_A)
 
     #Gradient step size
-    alpha_T=0.1/onp.max(X_vec.sum(axis=1))
+    if alpha_T is None:
+        alpha_T=0.1/onp.max(X_vec.sum(axis=1))
 
     #Values to keep track of
     Acc=[] #Likelihood

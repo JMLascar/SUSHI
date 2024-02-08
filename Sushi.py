@@ -367,6 +367,10 @@ def SUSHI(X_im,*models,component_names=["Thermal","Synchrotron"],
     print(f"Shape of the data: {l} channels, {m}x{n} pixels.")
     mask_amp=1 #Ignore wavelet coefficients on pixels with 0 counts.
     X_vec=np.reshape(np.transpose(X_im,(1,2,0)),(m*n,l)) #vectorized image
+    if Chi_2_sigma is not None:
+        Chi_2_sigma=np.reshape(np.transpose(Chi_2_sigma,(1,2,0)),(m*n,l))
+    if background is not None:
+        bg_vec=np.reshape(np.transpose(background,(1,2,0)),(m*n,l))
     class Component:
         def __init__(self, name, model):
             self.name = name

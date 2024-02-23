@@ -6,6 +6,8 @@ The purpose of SUSHI is to perform non-stationary unmixing of hyperspectral imag
 The typical use case explored in the companion paper is to map the physical parameters (e.g. temperature, redshift, etc) from a model with multiple components using data from hyperspectral images (aka integral field unit; IFUs).  
 In order to obtain more robust results on voxels with low signal to noise ratio, a spatial regularization is applied. This enables to map the physical parameters at small scales without the need of a spatial rebinning. While the use cases explored in the paper is focused on X-ray astronomy, the method can be applied to any IFU data cubes. 
 
+![image](https://github.com/JMLascar/SUSHI/assets/54967118/3573b9c3-9663-43f7-81be-422776c699b4)
+
 In this repositery, you will find:
 * *SUSHI Test Notebook.ipynb*: A jupiter tutorial notebook to try out SUSHI on an example similar to that in [Lascar, Bobin, Acero, 2023].
 * *SUSHI.py:* The SUSHI code itself, now able to take in a variable amount of components.

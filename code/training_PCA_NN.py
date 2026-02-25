@@ -105,10 +105,10 @@ def transform_and_split_data(phys_params, spec, rank=300,random_state=123,train_
 	
 	X_train, X_test, Y_train, Y_test = train_test_split(params_trans, spec_PCA, 
 		train_size=train_size,random_state=random_state)
-	X_train, X_test, Y_train, Y_test = jnp.array(X_train, dtype=jnp.float64),\
-	                                   jnp.array(X_test, dtype=jnp.float64),\
-	                                   jnp.array(Y_train, dtype=jnp.float64),\
-	                                   jnp.array(Y_test, dtype=jnp.float64),\
+	X_train, X_test, Y_train, Y_test = jnp.array(X_train),\
+	                                   jnp.array(X_test),\
+	                                   jnp.array(Y_train),\
+	                                   jnp.array(Y_test)
 
 	return ({"X_train":X_train, "X_test":X_test, 
 			'Y_train':Y_train, 'Y_test':Y_test,

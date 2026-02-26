@@ -31,12 +31,22 @@ class WrongDimensionError(StarletError):
 
 def _sym_pad(t: torch.Tensor, pad_config: tuple) -> torch.Tensor:
     """
-    Apply symmetric padding that exactly matches jnp.pad(..., mode='symmetric').
-    `pad_config` follows numpy.pad conventions: sequence of (before, after) per axis.
+    Pure-torch symmetric padding — identical to jnp.pad(..., mode='symmetric').
+    Stays on the original device (MPS / CUDA / CPU) with no numpy round-trip.
+
+    `pad_config` : sequence of (pad_before, pad_after) per axis, same as numpy.pad.
     """
-    arr = t.numpy()
-    arr = np.pad(arr, pad_config, mode="symmetric")
-    return torch.from_numpy(arr)
+    for dim, (pad_before, pad_after) in enumerate(pad_config):
+        if pad_before == 0 and pad_after == 0:
+            continue
+        N = t.size(dim)
+        # Build the full output index range for this dimension
+        idx = torch.arange(-pad_before, N + pad_after, device=t.device)
+        # Symmetric fold: idx mod 2N, then mirror upper half
+        idx = idx % (2 * N)
+        idx = torch.where(idx >= N, 2 * N - 1 - idx, idx)
+        t = torch.index_select(t, dim, idx)
+    return t
 
 
 ##############################################################################

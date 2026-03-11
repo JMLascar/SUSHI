@@ -39,7 +39,7 @@ def transform_spec(spec,constants=None,rank=300):
 		spec_log_scaled = (spec-spec_log_mean[:,np.newaxis])/spec_log_std[:,np.newaxis]
 		Cov=(spec_log_scaled)@(spec_log_scaled).T
 		S_spec,U_spec=np.linalg.eig(Cov)
-		U_spec=U_spec[:,:rank]
+		U_spec=np.real(U_spec[:,:rank])
 		spec_PCA=spec_log_scaled.T@U_spec
 		spec_PCA_mean,spec_PCA_std=spec_PCA.mean(),spec_PCA.std()
 		transformed_spec=(spec_PCA-spec_PCA_mean)/spec_PCA_std
@@ -59,6 +59,7 @@ def untransform_spec(spec_PCA,constants):
 	The reverse transformation of transform_spec. 
 	"""
 	spec_log_mean,spec_log_std,U_spec,spec_PCA_mean,spec_PCA_std=constants
+	U_spec = np.real(U_spec)
 	spec= (np.e**(((spec_PCA*spec_PCA_std+spec_PCA_mean
                            )@U_spec.T)*spec_log_std
                           +spec_log_mean))
@@ -105,10 +106,10 @@ def transform_and_split_data(phys_params, spec, rank=300,random_state=123,train_
 	
 	X_train, X_test, Y_train, Y_test = train_test_split(params_trans, spec_PCA, 
 		train_size=train_size,random_state=random_state)
-	X_train, X_test, Y_train, Y_test = jnp.array(X_train, dtype=jnp.float64),\
-	                                   jnp.array(X_test, dtype=jnp.float64),\
-	                                   jnp.array(Y_train, dtype=jnp.float64),\
-	                                   jnp.array(Y_test, dtype=jnp.float64),\
+	X_train, X_test, Y_train, Y_test = jnp.array(X_train),\
+	                                   jnp.array(X_test),\
+	                                   jnp.array(Y_train),\
+	                                   jnp.array(Y_test)
 
 	return ({"X_train":X_train, "X_test":X_test, 
 			'Y_train':Y_train, 'Y_test':Y_test,
@@ -249,6 +250,10 @@ def load_model(model_path):
 	)
 	params_cnst=train_direc["params_cnst"]
 	spec_cnst=train_direc["spec_cnst"]
+	
+	# CAST TO REAL TO AVOID COMPLEX JAX TRACES ON APPLE SILICON
+	spec_cnst = [np.real(c) for c in spec_cnst]
+	params_cnst = [np.real(c) for c in params_cnst]
 	def return_to_spectra(spec_PCA):
 		return untransform_spec(spec_PCA,constants=spec_cnst)
 	def scale_phys_params(phys_params):

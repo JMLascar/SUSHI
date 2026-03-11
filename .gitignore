@@ -2,6 +2,7 @@ template_thermal_tbabsapec_kT0.8-6_abund5_template_z-0.033+0.033_Tycho2009-ARF-R
 
 
 # Compiled files
+code/__pycache__
 *.pyc
 __pycache__
 
@@ -11,3 +12,4 @@ __pycache__
 # notebooks
 *.ipynb_checkpoints
 .jupyter
+*.p
